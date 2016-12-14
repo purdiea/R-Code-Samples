@@ -6,7 +6,9 @@
 ## Purpose: Samples of interesting graphs I created on various projects to use for
 #           future reference. 
 
-# Data Used: facebook1.R
+# Data Used: facebook_time_series.R
+#             -- This dataset came from the time series data loaded onto Redshift with
+#                additional formatting done in an R program "Time_series_analysis.R" 
 
 # Output: Code creates the graphs whose screenshots are included in this GitHub:
 
@@ -40,326 +42,39 @@ detach("package:RPostgreSQL", unload=TRUE)
 # Reassigns the select fucntion to be the dplyr version. 
 select <- dplyr::select 
 
+# Importing facebook time series formatted data
+fb <- readRDS("./facebook_time_series.Rda")
 
 
-## (1) Pulling over data and data integrity work ## 
+### (1) Graph1 - scatter plot function of total views over time ###
 
-library(RPostgreSQL)
-
-drv <- dbDriver("PostgreSQL")
-con <- dbConnect(drv, user = 'analytics', password = 'wgBjnlFSqsqfD7QYL0aHBASd', dbname = 'dev', 
-                 host = 'moveon.csqr1hggac2r.us-west-2.redshift.amazonaws.com', port=5439)
-
-que <- "SELECT count(*) as rec_ct
-FROM facebook.video_time_series"
-rs <- dbSendQuery(con, que)
-fbcount <- fetch(rs, n=-1)
-# 315195 obs - not too big, I should be able to pull it all over. 
-
-que <- "SELECT *
-FROM facebook.video_time_series
-ORDER BY video_id, snapshot_time"
-rs <- dbSendQuery(con, que)
-fb <- fetch(rs, n=-1)
-# Takes about 3 minutes. 
-detach("package:RPostgreSQL", unload=TRUE)
-# 497,477 obs as of ~ 9:30am 12/12
-
-# Looking at data
-summary(fb)
-
-# There are about 72k records with missing performance information.  Which videos have missing total_views? 
-test <- as.vector(unique(filter(fb, is.na(total_views))$video_id)) # 18 videos
-
-# Do any of them ever have non-missing total_views? 
-test2 <- filter(fb, video_id %in% test & !is.na(total_views))
-# 0 obs - so these videos that have missing total_views never end up having views recorded. 
-
-test3 <- filter(fb, video_id == '10153836068220493')
-# I went to the permanlink for this video at https://business.facebook.com/moveon/videos/10153836068220493/ and it
-# shows it as having 159,000 views and having been published.  I'm not sure why it doesn't show up with data in our
-# table though. Are these all videos that were published right around when Sandra started collecting the data?
-
-test4 <- fb %>% filter(video_id %in% test) %>% group_by(video_id, created_time) %>% distinct(.keep_all=TRUE)
-# No, they were created at all different times. 
-
-# Getting table of all the observed times to make sure there are no gaps
-test <- mutate(as.data.frame(table(fb$snapshot_time)), snapshot_time = as.POSIXct(Var1))
-test2 <- slide(test, Var = "snapshot_time", slideBy = -1) # Gets lagged snapshot_time
-names(test2)
-names(test2)[4] <- "snapshot_timelag"
-test2 <- mutate(test2, snapshot_timelag = as.POSIXct(snapshot_timelag, origin = "1970-01-01"),
-                timediff = snapshot_time - snapshot_timelag)
-test3 <- filter(test2, timediff > 12)
-# 20 obs
-# There are odd breaks in the times where data was not pulled.  None of them happen in the 
-# newly implemented script starting on 12/1 so I'm not going to worry about them. 
-
-# There is also an issue with a period of time when the query wasn't working and instead of populating
-# the table with new data every 10 minutes, it kept populating with the same data over and over.  This
-# happened on 2016-11-07 19:20:06 and wasn't identified and fixed until 2016-12-01 21:10:05.  So 
-# we have lots of duplicate data at the 11/7 time and no data between then and 12/1.  Therefore I will
-# keep only 1 record on 2016-11-07 19:20:06 and 
-# will be careful to exclude any videos that were created recently and may not have reached full viewership. 
-
-# Excluding records after the last 11/7 timestamp and records missing no total_views.
-test <- fb %>% filter(!is.na(total_views) & snapshot_time != '2016-11-07 19:20:06') # 193541
-fb1 <- fb %>% filter(!is.na(total_views)) %>% distinct() # 193609 obs
-test <- filter(fb1, snapshot_time == '2016-11-07 19:20:06') # 68 obs - these are all distinct videos so all the records at 
-# this time are in fact perfect duplicates. Plus 193541 + 68 = 193609 
-
-# 193609 obs. 
-
-# Bringing over total video info which will have the current total stats.  Will use this to 
-# compare total_views from our time series with total_views to date to see when the video 
-# reaches 90% of total views in the time series. 
-library(RPostgreSQL)
-
-drv <- dbDriver("PostgreSQL")
-con <- dbConnect(drv, user = 'analytics', password = 'wgBjnlFSqsqfD7QYL0aHBASd', dbname = 'dev', 
-                 host = 'moveon.csqr1hggac2r.us-west-2.redshift.amazonaws.com', port=5439)
-
-que <- "SELECT video_id, description, total_views as total_views_to_date
-FROM facebook.videos"
-rs <- dbSendQuery(con, que)
-videos <- fetch(rs, n=-1)
-# 293 videos 
-
-detach("package:RPostgreSQL", unload=TRUE)
-
-# Joining in total views to our time series data.  Adding percent of total views and hours since post variables 
-fb2 <- merge(x=fb1, y=videos, by.x = "video_id", by.y = "video_id", all.x=TRUE)
-fb2$pct_of_total <- with(fb2, round(total_views/total_views_to_date,2))
-fb2$hours_since_post <- with(fb2, round(as.numeric(difftime(snapshot_time, created_time, units = "hours")),3))
-
-# Did all of the time series videos have a record in the total video file? 
-summary(fb2)
-# total_views_to_date is never missing but it does equal 0 for at least one video
-
-test <- filter(fb2, total_views_to_date == 0)
-# This is for an Alicia Keys video that had two time series records with about 1,000 views. 
-# I wonder if the video was posted and then removed?  I will excluding this video from my analysis.
-
-fb3 <- filter(fb2, total_views_to_date != 0)
-# 193607 obs. 
-
-# How many distinct videos are there? 
-as.data.frame(table(fb3$video_id))
-# There are 98 distinct videos in our database. Most have 500-3,000 obs, some have as few as 5-10
-
-# Identifying videos that hit 90% during our gap in data. 
-test <- fb3 %>% filter((pct_of_total >= 0.90 & snapshot_time == '2016-12-01 21:10:05') | (pct_of_total < 0.90 & snapshot_time == '2016-11-07 19:20:06')) %>%
-  arrange(video_id, snapshot_time)
-# Now any videos that meet both criteria - hadn't hit 90% as of the break in the data, but had hit as of the restart - should have
-# two records in this df and should be excluded from my analysis.
-
-test2 <- as.data.frame(table(test$video_id))
-gapvids <- as.vector(test2$Var1[test2$Freq == 2])
-# 11 videos. I will keep them in for now. 
-
-# Adding in lag information between each consecutive record 
-fb3 <- arrange(fb3, video_id, snapshot_time)
-fb4 <- slide(fb3, Var = "total_views", slideBy = -1)
-fb4 <- slide(fb4, Var = "views_10sec", slideBy = -1)
-fb4 <- slide(fb4, Var = "hours_since_post", slideBy = -1)
-
-names(fb4)
-names(fb4)[c(12:14)] <- c("total_views_lag","views_10sec_lag","hours_since_post_lag")
-
-# Adding variable of change in total views per hour (slope) and % growth per hour
-fb5 <- fb4 %>% mutate(total_views_slope = round((total_views - total_views_lag)/(hours_since_post - hours_since_post_lag),4),
-                      total_views_pct_growth = round((total_views - total_views_lag)*100/(total_views_lag)/(hours_since_post - hours_since_post_lag),4))
-
-# Checking to make sure each video_id has only one created_time. 
-test <- fb5 %>% select(video_id, created_time) %>% distinct(.keep_all = TRUE)
-# 98 records so that means each video id must have only one created_time. 
-
-# Does each video have only one title?
-test <- fb5 %>% select(video_id, title) %>% distinct(.keep_all = TRUE)
-# 104 obs - so no, there are some videos with multiple titles. 
-
-# The duplicated function returns a logical vector indicating whether or not
-# there was a prior element (if given a vector) or a prior entire row in a 
-# dataframe (if given a dataframe) that matched perfectly.  Thus, it
-# returns TRUE for the second and all subsequent occurrences of a value. 
-# If you want to find both the first occurrence and all subsequent occurrances
-# you can do duplicated(df) | duplicated(df, fromLast=TRUE) because the fromLast
-# option marks all initial observations of a value as TRUE and the final occurance as 
-# FALSE. 
-test2 <- filter(test, duplicated(test$video_id) | duplicated(test$video_id, fromLast = TRUE))
-# 11 obs, 5 videos each w/ 2-3 titles. 
-# Looking at the time series data for these videos
-test3 <- arrange(fb5[fb5$video_id %in% test2$video_id,], video_id, snapshot_time)
-# These all have continuous, non-overlapping snapshot times as though the title
-# was edited some time after the initial posting.  I will keep the last version of the 
-# title for these videos and use that going foward. 
-
-# Add incrementing by-video variable, descending by snapshot time
-lasttitle <- fb5 %>%
-  group_by(video_id, created_time) %>%
-  mutate(snapshot_ct = order(snapshot_time, decreasing = TRUE)) %>%
-  filter(snapshot_ct == 1) %>%
-  select(video_id, created_time, title)
-
-describe(lasttitle$title)
-# Merging these last titles back into our dataframe
-fb6 <- merge(x=select(fb5, -title), y=lasttitle, all.x = TRUE)
-describe(fb6$title)
-
-# Are there duplicated titles that are assigned to more than one video?
-test <- fb6 %>% distinct(video_id, title)
-test2 <- filter(test, duplicated(test$title) | duplicated(test$title, fromLast = TRUE))
-# Yes - Stuck On Stupid is used twice and there are 10 other videos with missing titles. 
-# These must have been reposts of the same videos.
-# Looking at the data for these videos
-test2$title
-test3 <- arrange(fb6[fb6$title %in% test2$title,], video_id, snapshot_time)
-# It looks like the first posting of stuck on stupid was stopped after an hour of running
-# and then the second was posted.  I will delete the first version.
-
-# I will look at the videos with missing titles on Facebook and assign titles to them.
-fb7 <- fb6 %>% filter(video_id != '10153845758145493') %>%
-  mutate(title = ifelse(video_id == '10153845896335493', "Anna GOTV",
-                        ifelse(video_id == '10153889721805493', "Obama Trump Hardball",
-                               ifelse(video_id == '10153926207230493', "Karine re: Trump Staff Picks",
-                                      ifelse(video_id == '10153927072670493', "Karine re: Recounts",
-                                             ifelse(video_id == '10153927082170493', "Karine re: Margin of Victory",
-                                                    ifelse(video_id == '10153936552155493',"Karine re: Trump Breaking Promises",
-                                                           ifelse(video_id == '10153936562725493',"Karine re: Cooper Resistance",
-                                                                  ifelse(video_id == '10153936577680493',"Karine re:Carrier",
-                                                                         ifelse(video_id == '10153951639275493',"Karine re: Boeing",
-                                                                                ifelse(video_id == '10153954899150493',"Live Stop Bannon Cap Hill",
-                                                                                       title)))))))))))
-
-# 193600 obs. 
-as.data.frame(table(fb7$title))
-
-# Flagging videos that may not have stopped growing yet. 
-# Looking at growth rate in last 24 hours for each video.
-test1 <- fb7 %>% group_by(video_id) %>% filter(snapshot_time == max(snapshot_time)) %>% select(video_id, snapshot_time, hours_since_post, total_views, created_time)
-test2 <- fb7 %>% group_by(video_id) %>% filter(snapshot_time %in% c((max(snapshot_time) - (24*3600) - 60):(max(snapshot_time) - (24*3600) + 60))) %>%
-  rename(snapshot_time_24 = snapshot_time, hours_since_post_24 = hours_since_post, total_views_24 = total_views) %>%
-  select(video_id, snapshot_time_24, hours_since_post_24, total_views_24, created_time)
-# Only 97 obs so one video didn't exist 24 hours ago.
-
-# Joining together 
-test3 <- merge(test1,test2,by.x = c("video_id","created_time"), by.y=c("video_id","created_time"),all=TRUE)
-
-test4 <- test3 %>% mutate(pct_growth_24 = round((total_views - total_views_24)*100/(total_views_24),2)) %>% arrange(pct_growth_24)
-# Getting Unknown Column 'Var 1' errors sporadically.  Doesn't seem to affect the result but I can't figure out why I'm getting them.
-# There are 7 videos that grew by at least 1% over the last 24 hours.  2 of them look like steady growers that were posted awhile ago
-# but are still going strong and have 3M+ views.  The other 5 were posted very recently on 12/7, 8, or 9 (today is the 12th).  I will flage
-# these all as videos that are still potentially growing.
-
-stillgrowing <- as.vector(test4$video_id[test4$pct_growth_24 >= 1])
-# Note, it is possible that other videos have currently plateaud and thus have 24 hour growth rates of < 1% but will grow again
-# in the future.  There is no way to know this. 
-
-
-
-## (2) Analyzing total view trends over time ##
-
-
-
-# Add incrementing by-group variable to use as new, shorter, video id
-fb7 <- arrange(fb7, video_id) # Not sure if this matters but trying to make sure videos are labeled in same
-# order in future iterations. 
-fb8 <- transform(fb7, vid_id = match(video_id, unique(video_id))) 
-
-# Getting vector of all video ids
-vidids <- unique(fb8$vid_id)
-# 97 videos 
-
-# Graphing percent of total views over time.  Splitting into 13 plots so we have only 97 videos per plot
+# Graphing percent of total views over time.  Splitting into 13 plots so we have only 7 videos per plot
 splot <- function(videogroup, df) {
   end = videogroup*7
   start = end - 6
   plot <- ggplot(df[df$vid_id %in% vidids[start:end] & df$hours_since_post <=500,], aes(x = hours_since_post, y = pct_of_total)) +
-    geom_point(aes(color=factor(vid_id))) +
+    geom_point(aes(color=factor(substr(title,1,20)))) +
     geom_hline(yintercept = 0.90) +
-    geom_vline(xintercept = 48)
+    geom_vline(xintercept = 48) +
+    scale_color_discrete(name = "Video Title") +
+    ggtitle("Video Performance Over Time") +
+    labs(x="Hours Since Post",y="Percent of Total Views")
   return(plot) }
-splot(1,fb8)
-splot(2,fb8)
-splot(3,fb8)
-splot(4,fb8)
-splot(5,fb8)
-splot(6,fb8)
-splot(7,fb8)
-splot(8,fb8)
-splot(9,fb8)
-splot(10,fb8)
-splot(11,fb8)
-splot(12,fb8)
-splot(13,fb8)
-splot(14,fb8)
-# This highlights that most videos have very similar projections where 90% of the views occur within the first 48 hours and 
-# they occur in a fairly straight pattern and then immediately stop getting more views.  
-# A number of videos (~69-76) fall out because they ONLY had time series records that
-# were at least 500 hours from the posted time.  
+splot(1,fb)
+#splot(2,fb)
+#splot(3,fb)
+# ... etc 
 
-# It also shows that some videos are distinctly different though - some have a more gradual but still consistent
-# slope upward and don't make the 90% mark until much later.  Others have a plateau for a while and then get a boost
-# and grow some more.  
 
-# I will exclude the videos that don't seem to have enough information to really see the projection because
-# we are either missing data from when the video was first posted or we don't have enough data since
-# the video was posted. 
-fb9 <- fb8 %>% filter(!(vid_id %in% c(54,59:85)))
-# 148,585 obs
+## (2) Graph2 - Similar scatter plot with additional formatting ###
 
-# I will group the videos into these three categories for now.  
-fb10 <- fb9 %>% mutate(category = ifelse(vid_id %in% c(1,5,6,8,12,13,16,27,38,52,53,96), "plateau",
-                                         ifelse(vid_id %in% c(3,4,11,33,36,39,42,51,86,90,91,95), "steady grower",
-                                                "90 pct 48 hours")))
-
-# Now plotting again by group
-ggplot(fb10[fb10$category == "90 pct 48 hours" & fb10$vid_id <= 20 & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(vid_id))) +
+ggplot(fb[fb$category == "plateau",], aes(x = hours_since_post, y = pct_of_total)) +
+  geom_point(aes(color=factor(substr(title,1,20)))) +
   geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48)
-ggplot(fb10[fb10$category == "90 pct 48 hours" & fb10$vid_id %in% c(21:40) & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(vid_id))) +
-  geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48)
-ggplot(fb10[fb10$category == "90 pct 48 hours" & fb10$vid_id %in% c(41:60) & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(vid_id))) +
-  geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48)
-# ggplot(fb10[fb10$category == "90 pct 48 hours" & fb10$vid_id %in% c(61:80) & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-#   geom_point(aes(color=factor(vid_id))) +
-#   geom_hline(yintercept = 0.90) +
-#   geom_vline(xintercept = 48)
-ggplot(fb10[fb10$category == "90 pct 48 hours" & fb10$vid_id > 80 & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(vid_id))) +
-  geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48)
-ggplot(fb10[fb10$category == "steady grower" & fb10$vid_id <= 45 & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(vid_id))) +
-  geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48)
-ggplot(fb10[fb10$category == "steady grower" & fb10$vid_id > 45 & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(vid_id))) +
-  geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48)
-ggplot(fb10[fb10$category == "plateau" & fb10$vid_id <= 45 & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(vid_id))) +
-  geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48)
-ggplot(fb10[fb10$category == "plateau" & fb10$vid_id > 45 & fb10$hours_since_post <= 500,], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(vid_id))) +
-  geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48)
-
-# For the plateau videos, it looks like they mostly plateaued right around 48 hours and then stayed
-# at that state for anywhere from 10 hours to 200+ hours until they continued growing again for another 48
-# hours and then plateaued again.  A question is why did they start growing again?
-# - Were they shared by someone famous which caused a burst in their views?
-# - Did we repost them?
-# - Did we pay to boost them?
-# - Is it related to the day/time they were posted?
-# - Is it related to total views? 
-# - Something else? 
+  geom_vline(xintercept = 48) + 
+  scale_color_discrete(name = "Video Title") +
+  ggtitle("'Plateau' Video Performance Over Time") +
+  labs(x="Hours Since Post",y="Percent of Total Views")
 
 
 ## (3) Creating demonstratives to share with VidLab in an email about my findings so far ### 
@@ -374,13 +89,7 @@ ggplot(fb10[fb10$vid_id %in% vidids[21:25],], aes(x = hours_since_post, y = pct_
   labs(x="Hours Since Post",y="Percent of Total Views") 
 # Saved on my desktop and pasted into my email. 
 
-ggplot(fb10[fb10$category == "plateau" & fb10$vid_id %in% c(12,15,7,4,11),], aes(x = hours_since_post, y = pct_of_total)) +
-  geom_point(aes(color=factor(substr(title,1,20)))) +
-  geom_hline(yintercept = 0.90) +
-  geom_vline(xintercept = 48) + 
-  scale_color_discrete(name = "Video Title") +
-  ggtitle("'Plateau' Video Performance Over Time") +
-  labs(x="Hours Since Post",y="Percent of Total Views") 
+ 
 # Saved on my desktop and pasted into my email. 
 
 ggplot(fb10[fb10$category == "steady grower" ,], aes(x = hours_since_post, y = pct_of_total)) +

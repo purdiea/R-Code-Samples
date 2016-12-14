@@ -12,8 +12,15 @@ git log
 q
 
 
-git add TerminalCommands.txt
-git add facebook_time_series.Rda
+git add TerminalCommands.txt facebook_time_series.Rda
 git status
 
-git commit -m “Adding Terminal Commands and Facebook R Data”
+git commit -m “Adding”
+
+git push origin master
+
+# I also had to rename an image file that I’d uploaded incorrectly to git hub.  The documentation says some files (images in particular) cannot be renamed in git but have to be renamed via the terminal.  This is the syntax:
+
+git mv old_filename new_filename
+
+# Then you have to go through the add, commit, push process to have it updated in git.
