@@ -1,0 +1,19 @@
+# Commands I ran in the terminal to clone this repository to my computer and then update it with the R program I created.
+
+ssh-add ~/.ssh/github_id_rsa
+cd /Users/amywhite/Dropbox/MoveOn/GitHub
+git clone git@github.com:purdiea/R-Code-Samples.git
+cd R-Code-Samples
+git status
+git add Graphs.R
+git status
+git commit -m "Adding Graphs R Program"
+git log
+q
+
+
+git add TerminalCommands.txt
+git add facebook_time_series.Rda
+git status
+
+git commit -m “Adding Terminal Commands and Facebook R Data”
